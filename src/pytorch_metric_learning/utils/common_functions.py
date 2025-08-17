@@ -3,15 +3,29 @@ import glob
 import logging
 import os
 import re
+import urllib
 
 import numpy as np
 import scipy.stats
 import torch
+from tqdm import tqdm
 
 LOGGER_NAME = "PML"
 LOGGER = logging.getLogger(LOGGER_NAME)
 NUMPY_RANDOM = np.random
-COLLECT_STATS = True
+COLLECT_STATS = False
+
+
+# taken from:
+# https://github.com/pytorch/vision/blob/main/torchvision/datasets/utils.py#L27
+def _urlretrieve(url, filename, chunk_size=1024 * 32):
+    with urllib.request.urlopen(urllib.request.Request(url)) as response:
+        with open(filename, "wb") as fh, tqdm(
+            total=response.length, unit="B", unit_scale=True
+        ) as pbar:
+            while chunk := response.read(chunk_size):
+                fh.write(chunk)
+                pbar.update(len(chunk))
 
 
 def set_logger_name(name):
@@ -19,14 +33,6 @@ def set_logger_name(name):
     global LOGGER
     LOGGER_NAME = name
     LOGGER = logging.getLogger(LOGGER_NAME)
-
-
-class Identity(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x
 
 
 def pos_inf(dtype):
@@ -61,8 +67,6 @@ def numpy_to_torch(v):
 
 
 def to_numpy(v):
-    if is_list_or_tuple(v):
-        return np.stack([to_numpy(sub_v) for sub_v in v], axis=1)
     try:
         return v.cpu().numpy()
     except AttributeError:
@@ -84,13 +88,17 @@ def get_hierarchy_label(batch_labels, hierarchy_level):
 
 
 def map_labels(label_map, labels):
-    labels = to_numpy(labels)
-    if labels.ndim == 2:
-        for h in range(labels.shape[1]):
-            labels[:, h] = label_map(labels[:, h], h)
+    if is_list_or_tuple(labels):
+        labels = np.stack([to_numpy(sub) for sub in labels], axis=1)
     else:
-        labels = label_map(labels, 0)
-    return labels
+        labels = to_numpy(labels)
+    if labels.ndim == 2:
+        new_labels = np.zeros(labels.shape, dtype=int)
+        for h in range(labels.shape[1]):
+            new_labels[:, h] = label_map(labels[:, h], h)
+    else:
+        new_labels = label_map(labels, 0)
+    return new_labels
 
 
 def process_label(labels, hierarchy_level, label_map):
@@ -146,17 +154,6 @@ def safe_random_choice(input_data, size):
     return NUMPY_RANDOM.choice(input_data, size=size, replace=replace)
 
 
-def longest_list(list_of_lists):
-    return max(list_of_lists, key=len)
-
-
-def slice_by_n(input_array, n):
-    output = []
-    for i in range(n):
-        output.append(input_array[i::n])
-    return output
-
-
 def unslice_by_n(input_tensors):
     n = len(input_tensors)
     rows, cols = input_tensors[0].size()
@@ -208,10 +205,6 @@ def get_eval_dataloader(dataset, batch_size, num_workers, collate_fn):
     )
 
 
-def try_torch_operation(torch_op, input_val):
-    return torch_op(input_val) if torch.is_tensor(input_val) else input_val
-
-
 def get_labels_to_indices(labels):
     """
     Creates labels_to_indices, which is a dictionary mapping each label
@@ -223,7 +216,7 @@ def get_labels_to_indices(labels):
     for i, label in enumerate(labels):
         labels_to_indices[label].append(i)
     for k, v in labels_to_indices.items():
-        labels_to_indices[k] = np.array(v, dtype=np.int)
+        labels_to_indices[k] = np.array(v, dtype=int)
     return labels_to_indices
 
 
@@ -235,7 +228,9 @@ def make_label_to_rank_dict(label_set):
     Returns:
         A dictionary mapping each label to its numeric rank in the original set
     """
-    ranked = scipy.stats.rankdata(label_set) - 1
+    if len(set(label_set)) != len(label_set):
+        raise ValueError("label set must not have duplicates")
+    ranked = scipy.stats.rankdata(label_set).astype(int) - 1
     return {k: v for k, v in zip(label_set, ranked)}
 
 
@@ -265,7 +260,7 @@ class LabelMapper:
             return labels
         else:
             return np.array(
-                [self.label_map[hierarchy_level][x] for x in labels], dtype=np.int
+                [self.label_map[hierarchy_level][x] for x in labels], dtype=int
             )
 
 
@@ -391,9 +386,9 @@ def latest_version(folder, string_to_glob="trunk_*.pth", best=False):
     if items == []:
         return (0, None)
     model_regex = (
-        regex_wrapper("best[0-9]+\.pth$") if best else regex_wrapper("[0-9]+\.pth$")
+        regex_wrapper(r"best[0-9]+\.pth$") if best else regex_wrapper(r"[0-9]+\.pth$")
     )
-    epoch_regex = regex_wrapper("[0-9]+\.pth$")
+    epoch_regex = regex_wrapper(r"[0-9]+\.pth$")
     items = [x for x in items if model_regex.search(x)]
     version = [int(epoch_regex.findall(x)[-1].split(".")[0]) for x in items]
     resume_epoch = max(version)
@@ -405,20 +400,10 @@ def return_input(x):
     return x
 
 
-def angle_to_coord(angle):
-    x = np.cos(np.radians(angle))
-    y = np.sin(np.radians(angle))
-    return x, y
-
-
 def check_shapes(embeddings, labels):
-    if embeddings.size(0) != labels.size(0):
+    if labels is not None and embeddings.shape[0] != labels.shape[0]:
         raise ValueError("Number of embeddings must equal number of labels")
-    if embeddings.ndim != 2:
-        raise ValueError(
-            "embeddings must be a 2D tensor of shape (batch_size, embedding_size)"
-        )
-    if labels.ndim != 1:
+    if labels is not None and labels.ndim != 1:
         raise ValueError("labels must be a 1D tensor of shape (batch_size,)")
 
 
@@ -497,9 +482,54 @@ def to_device(x, tensor=None, device=None, dtype=None):
     return x
 
 
+def set_ref_emb(embeddings, labels, ref_emb, ref_labels):
+    if ref_emb is not None:
+        if ref_labels is not None:
+            ref_labels = to_device(ref_labels, ref_emb)
+    else:
+        ref_emb, ref_labels = embeddings, labels
+    check_shapes(ref_emb, ref_labels)
+    return ref_emb, ref_labels
+
+
+def labels_not_supported(labels, ref_labels):
+    if labels is not None or ref_labels is not None:
+        raise ValueError(
+            "labels are ref_labels are not supported for this loss function"
+        )
+
+
+def ref_not_supported(embeddings, labels, ref_emb, ref_labels):
+    if ref_emb is not embeddings or ref_labels is not labels:
+        raise ValueError("ref_emb is not supported for this loss function")
+
+
+def indices_tuple_not_supported(indices_tuple):
+    if indices_tuple is not None:
+        raise ValueError("indices_tuple is not supported for this loss function")
+
+
+def labels_required(labels):
+    if labels is None:
+        raise ValueError("labels are required for this loss function")
+
+
+def labels_or_indices_tuple_required(labels, indices_tuple):
+    if labels is None and indices_tuple is None:
+        raise ValueError("labels and indices_tuple cannot both be None")
+
+
+def concatenate_indices_tuples(it1, it2):
+    return tuple([torch.cat([x, to_device(y, x)], dim=0) for x, y in zip(it1, it2)])
+
+
 def exclude(it, targets):
     return [x for x in it if x not in targets]
 
 
 def append_map(it, suf):
     return [x + suf for x in it]
+
+
+def use_cuda_if_available():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")

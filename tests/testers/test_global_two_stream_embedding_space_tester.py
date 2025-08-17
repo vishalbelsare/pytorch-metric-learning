@@ -5,7 +5,8 @@ import torch
 
 from pytorch_metric_learning.testers import GlobalTwoStreamEmbeddingSpaceTester
 from pytorch_metric_learning.utils import accuracy_calculator
-from pytorch_metric_learning.utils import common_functions as c_f
+
+from ..zzz_testing_utils.testing_utils import angle_to_coord
 
 
 class FakeDataset(torch.utils.data.Dataset):
@@ -24,15 +25,15 @@ class FakeDataset(torch.utils.data.Dataset):
 class TestGlobalTwoStreamEmbeddingSpaceTester(unittest.TestCase):
     def test_global_two_stream_embedding_space_tester(self):
         embedding_angles = [0, 10, 20, 30, 50, 60, 70, 80]
-        embeddings1 = torch.tensor([c_f.angle_to_coord(a) for a in embedding_angles])
+        embeddings1 = torch.tensor([angle_to_coord(a) for a in embedding_angles])
         embedding_angles = [81, 71, 61, 31, 51, 21, 11, 1]
-        embeddings2 = torch.tensor([c_f.angle_to_coord(a) for a in embedding_angles])
+        embeddings2 = torch.tensor([angle_to_coord(a) for a in embedding_angles])
         labels = torch.LongTensor([1, 2, 3, 4, 5, 6, 7, 8, 9])
         dataset_dict = {
             "train": FakeDataset(embeddings1, embeddings2, labels),
         }
 
-        model = c_f.Identity()
+        model = torch.nn.Identity()
         AC = accuracy_calculator.AccuracyCalculator(include=("precision_at_1",))
 
         tester = GlobalTwoStreamEmbeddingSpaceTester(

@@ -6,16 +6,18 @@ from pytorch_metric_learning.testers import GlobalEmbeddingSpaceTester
 from pytorch_metric_learning.utils import accuracy_calculator
 from pytorch_metric_learning.utils import common_functions as c_f
 
+from ..zzz_testing_utils.testing_utils import angle_to_coord
+
 
 class TestGlobalEmbeddingSpaceTester(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         embedding_angles = [0, 10, 20, 30, 50, 60, 70, 80]
-        embeddings1 = torch.tensor([c_f.angle_to_coord(a) for a in embedding_angles])
+        embeddings1 = torch.tensor([angle_to_coord(a) for a in embedding_angles])
         labels1 = torch.LongTensor([0, 0, 0, 0, 1, 1, 1, 1])
 
         embedding_angles = [1, 11, 21, 31, 51, 59, 71, 81]
-        embeddings2 = torch.tensor([c_f.angle_to_coord(a) for a in embedding_angles])
+        embeddings2 = torch.tensor([angle_to_coord(a) for a in embedding_angles])
         labels2 = torch.LongTensor([1, 1, 1, 1, 1, 0, 0, 0])
 
         self.dataset_dict = {
@@ -24,7 +26,7 @@ class TestGlobalEmbeddingSpaceTester(unittest.TestCase):
         }
 
     def test_global_embedding_space_tester(self):
-        model = c_f.Identity()
+        model = torch.nn.Identity()
         AC = accuracy_calculator.AccuracyCalculator(include=("precision_at_1",))
 
         correct = [
@@ -51,7 +53,7 @@ class TestGlobalEmbeddingSpaceTester(unittest.TestCase):
 
     def test_pca(self):
         # just make sure pca runs without crashing
-        model = c_f.Identity()
+        model = torch.nn.Identity()
         AC = accuracy_calculator.AccuracyCalculator(include=("precision_at_1",))
         embeddings = torch.randn(1024, 512)
         labels = torch.randint(0, 10, size=(1024,))
@@ -68,7 +70,7 @@ class TestGlobalEmbeddingSpaceTester(unittest.TestCase):
             accuracy_calculator=AC,
             end_of_testing_hook=end_of_testing_hook,
         )
-        all_accuracies = tester.test(dataset_dict, 0, model)
+        tester.test(dataset_dict, 0, model)
         self.assertTrue(not hasattr(tester, "embeddings_and_labels"))
 
     @classmethod

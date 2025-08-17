@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 import torch
 
-from pytorch_metric_learning.utils import accuracy_calculator, stat_utils
+from pytorch_metric_learning.utils import accuracy_calculator, inference
+
+from .. import TEST_DEVICE
 
 ### FROM https://gist.github.com/VChristlein/fd55016f8d1b38e95011a025cbff9ccc
 ### and https://github.com/KevinMusgrave/pytorch-metric-learning/issues/290
@@ -11,54 +13,63 @@ from pytorch_metric_learning.utils import accuracy_calculator, stat_utils
 
 class TestCalculateAccuraciesLargeK(unittest.TestCase):
     def test_accuracy_calculator_large_k(self):
+        np.random.seed(493)
         for ecfss in [False, True]:
-            for max_k in [None, "max_bin_count"]:
+            for max_k in [None, 98, "max_bin_count"]:
                 for num_embeddings in [1000, 2100]:
-                    # make random features
-                    encs = np.random.rand(num_embeddings, 5).astype(np.float32)
-                    # and random labels of 100 classes
-                    labels = np.zeros((num_embeddings // 100, 100), dtype=np.int32)
-                    for i in range(10):
-                        labels[i] = np.arange(100)
-                    labels = labels.ravel()
-
-                    correct_p1, correct_map, correct_mapr = self.evaluate(
-                        encs, labels, max_k, ecfss
-                    )
-
-                    # use Musgrave's library
-                    if max_k is None:
-                        k = len(encs) - 1 if ecfss else len(encs)
-                        accs = [
-                            accuracy_calculator.AccuracyCalculator(),
-                            accuracy_calculator.AccuracyCalculator(k=k),
-                        ]
-                    elif max_k == "max_bin_count":
-                        accs = [
-                            accuracy_calculator.AccuracyCalculator(k="max_bin_count")
-                        ]
-
-                    for acc in accs:
-                        d = acc.get_accuracy(
-                            encs,
-                            encs,
-                            labels,
-                            labels,
-                            ecfss,
-                            include=(
-                                "mean_average_precision",
-                                "mean_average_precision_at_r",
-                                "precision_at_1",
-                            ),
+                    for num_classes in [2, 11, 103]:
+                        # make random features
+                        encs = np.random.rand(num_embeddings, 5).astype(np.float32)
+                        # and random labels of 100 classes
+                        labels = np.random.randint(
+                            0, num_classes, size=(num_embeddings,)
                         )
 
-                        self.assertTrue(np.isclose(correct_p1, d["precision_at_1"]))
-                        self.assertTrue(
-                            np.isclose(correct_map, d["mean_average_precision"])
+                        correct_p1, correct_map, correct_mapr = self.evaluate(
+                            encs, labels, max_k, ecfss
                         )
-                        self.assertTrue(
-                            np.isclose(correct_mapr, d["mean_average_precision_at_r"])
-                        )
+
+                        # use Musgrave's library
+                        if max_k is None:
+                            k = len(encs) - 1 if ecfss else len(encs)
+                            accs = [
+                                accuracy_calculator.AccuracyCalculator(
+                                    device=TEST_DEVICE
+                                ),
+                                accuracy_calculator.AccuracyCalculator(
+                                    k=k, device=TEST_DEVICE
+                                ),
+                            ]
+                        else:
+                            accs = [
+                                accuracy_calculator.AccuracyCalculator(
+                                    k=max_k, device=TEST_DEVICE
+                                )
+                            ]
+
+                        for acc in accs:
+                            d = acc.get_accuracy(
+                                encs,
+                                labels,
+                                encs,
+                                labels,
+                                ecfss,
+                                include=(
+                                    "mean_average_precision",
+                                    "mean_average_precision_at_r",
+                                    "precision_at_1",
+                                ),
+                            )
+
+                            self.assertAlmostEqual(
+                                correct_p1, d["precision_at_1"], places=5
+                            )
+                            self.assertAlmostEqual(
+                                correct_map, d["mean_average_precision"], places=5
+                            )
+                            self.assertAlmostEqual(
+                                correct_mapr, d["mean_average_precision_at_r"], places=5
+                            )
 
     def evaluate(self, encs, labels, max_k=None, ecfss=False):
         """
@@ -71,13 +82,15 @@ class TestCalculateAccuraciesLargeK(unittest.TestCase):
         # let's use Musgrave's knn
         torch_encs = torch.from_numpy(encs)
         k = len(encs) - 1 if ecfss else len(encs)
-        all_indices, _ = stat_utils.get_knn(torch_encs, torch_encs, k, ecfss)
+        knn_func = inference.FaissKNN()
+        _, all_indices = knn_func(torch_encs, k, torch_encs, ecfss)
         if max_k is None:
             max_k = k
             indices = all_indices
-        elif max_k == "max_bin_count":
-            max_k = int(max(np.bincount(labels))) - int(ecfss)
-            indices, _ = stat_utils.get_knn(torch_encs, torch_encs, max_k, ecfss)
+        else:
+            if max_k == "max_bin_count":
+                max_k = int(max(np.bincount(labels))) - int(ecfss)
+            _, indices = knn_func(torch_encs, max_k, torch_encs, ecfss)
 
         # let's use the most simple mAP implementation
         # of course this can be computed much faster using cumsum, etc.
@@ -102,7 +115,7 @@ class TestCalculateAccuraciesLargeK(unittest.TestCase):
                     if k < all_rel:
                         prec_at_r.append(rel / float(k + 1))
 
-            avg_precision = np.mean(precisions) if len(precisions) > 0 else 0
+            avg_precision = np.sum(precisions) / all_rel if all_rel > 0 else 0
             mAP.append(avg_precision)
             # mAP@R
             avg_prec_at_r = np.sum(prec_at_r) / all_rel if all_rel > 0 else 0

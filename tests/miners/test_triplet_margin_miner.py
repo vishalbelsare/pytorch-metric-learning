@@ -4,9 +4,10 @@ import torch
 
 from pytorch_metric_learning.distances import CosineSimilarity, LpDistance
 from pytorch_metric_learning.miners import TripletMarginMiner
-from pytorch_metric_learning.utils import common_functions as c_f
 
-from .. import TEST_DEVICE, TEST_DTYPES
+from .. import TEST_DEVICE, TEST_DTYPES, WITH_COLLECT_STATS
+from ..zzz_testing_utils import testing_utils
+from ..zzz_testing_utils.testing_utils import angle_to_coord
 
 
 class TestTripletMarginMiner(unittest.TestCase):
@@ -15,7 +16,7 @@ class TestTripletMarginMiner(unittest.TestCase):
             for distance in [LpDistance(), CosineSimilarity()]:
                 embedding_angles = torch.arange(0, 16)
                 embeddings = torch.tensor(
-                    [c_f.angle_to_coord(a) for a in embedding_angles],
+                    [angle_to_coord(a) for a in embedding_angles],
                     requires_grad=True,
                     dtype=dtype,
                 ).to(
@@ -85,6 +86,13 @@ class TestTripletMarginMiner(unittest.TestCase):
                         )
                         self.assertTrue(mined_triplets == correct_triplets)
 
+                        testing_utils.is_not_none_if_condition(
+                            self,
+                            miner,
+                            ["avg_triplet_margin", "pos_pair_dist", "neg_pair_dist"],
+                            WITH_COLLECT_STATS,
+                        )
+
     def test_empty_output(self):
         miner = TripletMarginMiner(0.5, type_of_triplets="all")
         for dtype in TEST_DTYPES:
@@ -95,3 +103,12 @@ class TestTripletMarginMiner(unittest.TestCase):
             self.assertTrue(len(a) == 0)
             self.assertTrue(len(p) == 0)
             self.assertTrue(len(n) == 0)
+
+    @unittest.skipUnless(WITH_COLLECT_STATS, "WITH_COLLECT_STATS is false")
+    def test_recordable_attributes(self):
+        miner = TripletMarginMiner()
+        emb, labels = torch.randn(32, 32), torch.randint(0, 3, size=(32,))
+        miner(emb, labels)
+        self.assertNotEqual(miner.avg_triplet_margin, 0)
+        self.assertNotEqual(miner.pos_pair_dist, 0)
+        self.assertNotEqual(miner.neg_pair_dist, 0)

@@ -146,6 +146,24 @@ class TestLossAndMinerUtils(unittest.TestCase):
             )
             self.assertTrue(torch.all(weights == correct_weights))
 
+        # Case where convert_to_weights is used with ref_emb.
+        # In this case, indices_tuple will include indices
+        # that point to ref_emb, which may be larger than the query
+        batch_size = 32
+        labels = torch.randint(0, 10, size=(batch_size,)).to(TEST_DEVICE)
+        a = torch.randint(0, batch_size, size=(256,)).to(TEST_DEVICE)
+        p = torch.randint(0, batch_size * 2, size=(256,)).to(TEST_DEVICE)
+        n = torch.randint(0, batch_size * 2, size=(256,)).to(TEST_DEVICE)
+        for dtype in TEST_DTYPES:
+            weights = lmu.convert_to_weights(
+                (a, p, n), labels=labels, dtype=dtype, using_ref=True
+            )
+
+            _, counts = torch.unique(a, return_counts=True, sorted=True)
+            counts = counts.type(weights.dtype) / torch.max(counts)
+            # Will fail on cuda if there is an indexing error
+            self.assertTrue(torch.equal(weights, counts))
+
     def test_get_random_triplet_indices(self):
         for dtype in TEST_DTYPES:
             for _ in range(10):
@@ -230,6 +248,71 @@ class TestLossAndMinerUtils(unittest.TestCase):
                 ref_labels[0] = 0
                 a, p, n = lmu.get_random_triplet_indices(labels, ref_labels=ref_labels)
                 self.assertTrue(len(a) == len(p) == len(n) == 100)
+
+    def test_remove_self_comparisons(self):
+        labels = torch.tensor([0, 0, 1])
+        ref_labels = torch.tensor([1, 1, 0, 0])
+
+        for do_reverse in [False, True]:
+            if do_reverse:
+                all_labels = torch.cat([ref_labels, labels])
+                curr_batch_idx = torch.arange(4, 7)
+                correct_a1 = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2])
+                correct_p = torch.tensor([2, 3, 5, 2, 3, 4, 0, 1])
+            else:
+                all_labels = torch.cat([labels, ref_labels])
+                curr_batch_idx = torch.arange(3)
+                correct_a1 = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2])
+                correct_p = torch.tensor([1, 5, 6, 0, 5, 6, 3, 4])
+
+            indices_tuple = lmu.get_all_pairs_indices(labels, all_labels)
+            ref_size = len(all_labels)
+            indices_tuple = lmu.remove_self_comparisons(
+                indices_tuple, curr_batch_idx, ref_size
+            )
+            a1, p, a2, n = indices_tuple
+            self.assertTrue(torch.equal(a1, correct_a1))
+            self.assertTrue(torch.equal(p, correct_p))
+
+    def test_remove_self_comparisons_small_ref(self):
+        labels = torch.tensor([0, 0, 1])
+        labels2 = torch.tensor([1, 1, 0, 0])
+        all_labels = torch.cat([labels, labels2])
+        curr_batch_idx = torch.arange(3, 7)
+        correct_a1 = torch.tensor([0, 0, 1, 1, 2, 2, 3, 4, 5, 6])
+        correct_p = torch.tensor([2, 3, 2, 3, 0, 1, 1, 0, 3, 2])
+
+        indices_tuple = lmu.get_all_pairs_indices(all_labels, labels2)
+        ref_size = len(labels2)
+        indices_tuple = lmu.remove_self_comparisons(
+            indices_tuple, curr_batch_idx, ref_size, ref_is_subset=True
+        )
+        a1, p, a2, n = indices_tuple
+        self.assertTrue(torch.equal(a1, correct_a1))
+        self.assertTrue(torch.equal(p, correct_p))
+
+    def test_get_all_triplets_indices(self):
+        torch.manual_seed(920)
+        for dtype in TEST_DTYPES:
+            for batch_size in [32, 256, 512]:
+                for ref_labels in [None, torch.randint(0, 5, size=(batch_size // 2,))]:
+                    labels = torch.randint(0, 5, size=(batch_size,))
+
+                    a, p, n = lmu.get_all_triplets_indices(labels, ref_labels)
+                    matches, diffs = lmu.get_matches_and_diffs(labels, ref_labels)
+
+                    a2, p2, n2 = lmu.get_all_triplets_indices_vectorized_method(
+                        matches, diffs
+                    )
+                    a3, p3, n3 = lmu.get_all_triplets_indices_loop_method(
+                        labels, matches, diffs
+                    )
+                    self.assertTrue(
+                        (a == a2).all() and (p == p2).all() and (n == n2).all()
+                    )
+                    self.assertTrue(
+                        (a == a3).all() and (p == p3).all() and (n == n3).all()
+                    )
 
 
 if __name__ == "__main__":

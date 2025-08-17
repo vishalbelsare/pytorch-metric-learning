@@ -3,27 +3,50 @@ import torch
 from ..utils import common_functions as c_f
 from ..utils import loss_and_miner_utils as lmu
 from ..utils.module_with_records import ModuleWithRecords
+from .base_loss_wrapper import BaseLossWrapper
 
 
-class CrossBatchMemory(ModuleWithRecords):
+class CrossBatchMemory(BaseLossWrapper, ModuleWithRecords):
     def __init__(self, loss, embedding_size, memory_size=1024, miner=None, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(loss=loss, **kwargs)
         self.loss = loss
         self.miner = miner
         self.embedding_size = embedding_size
         self.memory_size = memory_size
-        self.embedding_memory = torch.zeros(self.memory_size, self.embedding_size)
-        self.label_memory = torch.zeros(self.memory_size).long()
-        self.has_been_filled = False
-        self.queue_idx = 0
+        self.reset_queue()
         self.add_to_recordable_attributes(
             list_of_names=["embedding_size", "memory_size", "queue_idx"], is_stat=False
         )
 
-    def forward(self, embeddings, labels, indices_tuple=None, enqueue_idx=None):
-        if enqueue_idx is not None:
-            assert len(enqueue_idx) <= len(self.embedding_memory)
-            assert len(enqueue_idx) < len(embeddings)
+    @staticmethod
+    def supported_losses():
+        return [
+            "AngularLoss",
+            "CircleLoss",
+            "ContrastiveLoss",
+            "GeneralizedLiftedStructureLoss",
+            "IntraPairVarianceLoss",
+            "LiftedStructureLoss",
+            "MarginLoss",
+            "MultiSimilarityLoss",
+            "NCALoss",
+            "NTXentLoss",
+            "SignalToNoiseRatioContrastiveLoss",
+            "SupConLoss",
+            "TripletMarginLoss",
+            "TupletMarginLoss",
+        ]
+
+    @classmethod
+    def check_loss_support(cls, loss_name):
+        if loss_name not in cls.supported_losses():
+            raise Exception(f"CrossBatchMemory not supported for {loss_name}")
+
+    def forward(self, embeddings, labels, indices_tuple=None, enqueue_mask=None):
+        if indices_tuple is not None and enqueue_mask is not None:
+            raise ValueError("indices_tuple and enqueue_mask are mutually exclusive")
+        if enqueue_mask is not None:
+            assert len(enqueue_mask) == len(embeddings)
         else:
             assert len(embeddings) <= len(self.embedding_memory)
         self.reset_stats()
@@ -36,20 +59,17 @@ class CrossBatchMemory(ModuleWithRecords):
             self.label_memory, device=device, dtype=labels.dtype
         )
 
-        if enqueue_idx is not None:
-            mask = torch.zeros(len(embeddings), device=device, dtype=torch.bool)
-            mask[enqueue_idx] = True
-            emb_for_queue = embeddings[mask]
-            labels_for_queue = labels[mask]
-            embeddings = embeddings[~mask]
-            labels = labels[~mask]
+        if enqueue_mask is not None:
+            emb_for_queue = embeddings[enqueue_mask]
+            labels_for_queue = labels[enqueue_mask]
+            embeddings = embeddings[~enqueue_mask]
+            labels = labels[~enqueue_mask]
             do_remove_self_comparisons = False
         else:
             emb_for_queue = embeddings
             labels_for_queue = labels
             do_remove_self_comparisons = True
 
-        batch_size = len(embeddings)
         queue_batch_size = len(emb_for_queue)
         self.add_to_memory(emb_for_queue, labels_for_queue, queue_batch_size)
 
@@ -61,7 +81,6 @@ class CrossBatchMemory(ModuleWithRecords):
             L_mem = self.label_memory
 
         indices_tuple = self.create_indices_tuple(
-            batch_size,
             embeddings,
             labels,
             E_mem,
@@ -69,9 +88,7 @@ class CrossBatchMemory(ModuleWithRecords):
             indices_tuple,
             do_remove_self_comparisons,
         )
-        combined_embeddings = torch.cat([embeddings, E_mem], dim=0)
-        combined_labels = torch.cat([labels, L_mem], dim=0)
-        loss = self.loss(combined_embeddings, combined_labels, indices_tuple)
+        loss = self.loss(embeddings, labels, indices_tuple, E_mem, L_mem)
         return loss
 
     def add_to_memory(self, embeddings, labels, batch_size):
@@ -90,7 +107,6 @@ class CrossBatchMemory(ModuleWithRecords):
 
     def create_indices_tuple(
         self,
-        batch_size,
         embeddings,
         labels,
         E_mem,
@@ -104,9 +120,9 @@ class CrossBatchMemory(ModuleWithRecords):
             indices_tuple = lmu.get_all_pairs_indices(labels, L_mem)
 
         if do_remove_self_comparisons:
-            indices_tuple = self.remove_self_comparisons(indices_tuple)
-
-        indices_tuple = c_f.shift_indices_tuple(indices_tuple, batch_size)
+            indices_tuple = lmu.remove_self_comparisons(
+                indices_tuple, self.curr_batch_idx, self.memory_size
+            )
 
         if input_indices_tuple is not None:
             if len(input_indices_tuple) == 3 and len(indices_tuple) == 4:
@@ -115,47 +131,16 @@ class CrossBatchMemory(ModuleWithRecords):
                 input_indices_tuple = lmu.convert_to_triplets(
                     input_indices_tuple, labels
                 )
-            indices_tuple = tuple(
-                [
-                    torch.cat([x, c_f.to_device(y, x)], dim=0)
-                    for x, y in zip(indices_tuple, input_indices_tuple)
-                ]
+            indices_tuple = c_f.concatenate_indices_tuples(
+                indices_tuple, input_indices_tuple
             )
 
         return indices_tuple
 
-    def remove_self_comparisons(self, indices_tuple):
-        # remove self-comparisons
-        assert len(indices_tuple) in [3, 4]
-        s, e = self.curr_batch_idx[0], self.curr_batch_idx[-1]
-        if len(indices_tuple) == 3:
-            a, p, n = indices_tuple
-            keep_mask = self.not_self_comparisons(a, p, s, e)
-            a = a[keep_mask]
-            p = p[keep_mask]
-            n = n[keep_mask]
-            assert len(a) == len(p) == len(n)
-            return a, p, n
-        elif len(indices_tuple) == 4:
-            a1, p, a2, n = indices_tuple
-            keep_mask = self.not_self_comparisons(a1, p, s, e)
-            a1 = a1[keep_mask]
-            p = p[keep_mask]
-            assert len(a1) == len(p)
-            assert len(a2) == len(n)
-            return a1, p, a2, n
-
-    # a: anchors
-    # p: positives
-    # s: curr batch start idx in queue
-    # e: curr batch end idx in queue
-    def not_self_comparisons(self, a, p, s, e):
-        curr_batch = torch.any(p.unsqueeze(1) == self.curr_batch_idx, dim=1)
-        a_c = a[curr_batch]
-        p_c = p[curr_batch]
-        p_c -= s
-        if e <= s:
-            p_c[p_c <= e - s] += self.memory_size
-        without_self_comparisons = curr_batch.clone()
-        without_self_comparisons[torch.where(curr_batch)[0][a_c == p_c]] = False
-        return without_self_comparisons | ~curr_batch
+    def reset_queue(self):
+        self.register_buffer(
+            "embedding_memory", torch.zeros(self.memory_size, self.embedding_size)
+        )
+        self.register_buffer("label_memory", torch.zeros(self.memory_size).long())
+        self.has_been_filled = False
+        self.queue_idx = 0

@@ -7,7 +7,6 @@ from torchvision import datasets
 
 from pytorch_metric_learning.losses import NTXentLoss, TripletMarginLoss
 from pytorch_metric_learning.trainers import (
-    CascadedEmbeddings,
     DeepAdversarialMetricLearning,
     MetricLossOnly,
     TrainWithClassifier,
@@ -32,7 +31,6 @@ class TestMetricLossOnly(unittest.TestCase):
             TrainWithClassifier,
             TwoStreamMetricLoss,
         ]:
-
             model_dict = {"trunk": model}
             optimizer_dict = {"trunk_optimizer": None}
             loss_fn_dict = {"metric_loss": loss_fn}
@@ -54,7 +52,7 @@ class TestMetricLossOnly(unittest.TestCase):
                 "lr_schedulers": lr_scheduler_dict,
             }
 
-            trainer = trainer_class(**kwargs)
+            trainer_class(**kwargs)
 
             for k in [
                 "models",
@@ -78,7 +76,7 @@ class TestMetricLossOnly(unittest.TestCase):
                 if k == "lr_schedulers":
                     new_kwargs[k] = {"trunk_scheduler": None}
                 with self.assertRaises(AssertionError):
-                    trainer = trainer_class(**new_kwargs)
+                    trainer_class(**new_kwargs)
 
 
 if __name__ == "__main__":

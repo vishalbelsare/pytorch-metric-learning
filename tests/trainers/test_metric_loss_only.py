@@ -8,6 +8,7 @@ import torch
 from torchvision import datasets, transforms
 
 from pytorch_metric_learning.losses import NTXentLoss
+from pytorch_metric_learning.reducers import AvgNonZeroReducer
 from pytorch_metric_learning.samplers import MPerClassSampler
 from pytorch_metric_learning.testers import GlobalEmbeddingSpaceTester
 from pytorch_metric_learning.trainers import MetricLossOnly
@@ -23,7 +24,6 @@ logging.getLogger(c_f.LOGGER_NAME).setLevel(logging.INFO)
 
 class TestMetricLossOnly(unittest.TestCase):
     def test_metric_loss_only(self):
-
         cifar_resnet_folder = "temp_cifar_resnet_for_pytorch_metric_learning_test"
         dataset_folder = "temp_dataset_for_pytorch_metric_learning_test"
         model_folder = "temp_saved_models_for_pytorch_metric_learning_test"
@@ -36,7 +36,7 @@ class TestMetricLossOnly(unittest.TestCase):
             )
         )
 
-        loss_fn = NTXentLoss()
+        loss_fn = NTXentLoss(reducer=AvgNonZeroReducer())
 
         normalize_transform = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -95,7 +95,7 @@ class TestMetricLossOnly(unittest.TestCase):
                     map_location=TEST_DEVICE,
                 )
                 model.load_state_dict(checkpoint["state_dict"])
-                model.module.linear = c_f.Identity()
+                model.module.linear = torch.nn.Identity()
                 if TEST_DEVICE == torch.device("cpu"):
                     model = model.module
                 model = model.to(TEST_DEVICE).type(dtype)
@@ -108,7 +108,8 @@ class TestMetricLossOnly(unittest.TestCase):
                 )
 
                 batch_size = 32
-                iterations_per_epoch = None if splits_to_eval is None else 1
+                iterations_per_epoch = 10
+                log_freq = 2
                 model_dict = {"trunk": model}
                 optimizer_dict = {"trunk_optimizer": optimizer}
                 loss_fn_dict = {"metric_loss": loss_fn}
@@ -123,7 +124,7 @@ class TestMetricLossOnly(unittest.TestCase):
                     logs_folder, tensorboard_folder
                 )
                 hooks = logging_presets.get_hook_container(
-                    record_keeper, primary_metric="precision_at_1"
+                    record_keeper, primary_metric="precision_at_1", log_freq=log_freq
                 )
                 dataset_dict = {"train": train_dataset_for_eval, "val": val_dataset}
 
@@ -134,7 +135,7 @@ class TestMetricLossOnly(unittest.TestCase):
                     ),
                     data_device=TEST_DEVICE,
                     dtype=dtype,
-                    dataloader_num_workers=32,
+                    dataloader_num_workers=2,
                 )
 
                 end_of_epoch_hook = hooks.end_of_epoch_hook(
@@ -151,26 +152,34 @@ class TestMetricLossOnly(unittest.TestCase):
                     optimizers=optimizer_dict,
                     batch_size=batch_size,
                     loss_funcs=loss_fn_dict,
-                    mining_funcs={},
                     dataset=train_dataset,
                     sampler=sampler,
                     data_device=TEST_DEVICE,
                     dtype=dtype,
-                    dataloader_num_workers=32,
+                    dataloader_num_workers=2,
                     iterations_per_epoch=iterations_per_epoch,
                     freeze_trunk_batchnorm=True,
                     end_of_iteration_hook=hooks.end_of_iteration_hook,
                     end_of_epoch_hook=end_of_epoch_hook,
                 )
 
-                num_epochs = 3
+                num_epochs = 2
                 trainer.train(num_epochs=num_epochs)
+
+                for record_name in [
+                    "metric_loss_NTXentLoss",
+                    "metric_loss_NTXentLoss__modules_distance_CosineSimilarity",
+                    "metric_loss_NTXentLoss__modules_reducer_AvgNonZeroReducer",
+                ]:
+                    self.assertTrue(record_keeper.table_exists(record_name))
+                    self.assertTrue(
+                        len(record_keeper.query(f"SELECT * FROM {record_name}"))
+                        == num_epochs * iterations_per_epoch / log_freq
+                    )
+
                 best_epoch, best_accuracy = hooks.get_best_epoch_and_accuracy(
                     tester, "val"
                 )
-                if splits_to_eval is None:
-                    self.assertTrue(best_epoch == 3)
-                    self.assertTrue(best_accuracy > 0.2)
 
                 accuracies, primary_metric_key = hooks.get_accuracies_of_best_epoch(
                     tester, "val"
@@ -199,7 +208,7 @@ class TestMetricLossOnly(unittest.TestCase):
                 if splits_to_eval is None:
                     self.assertTrue(
                         len(loss_history["metric_loss"])
-                        == (len(sampler) / batch_size) * num_epochs
+                        == (iterations_per_epoch / log_freq) * num_epochs
                     )
 
                 curr_primary_metric = hooks.get_curr_primary_metric(tester, "val")

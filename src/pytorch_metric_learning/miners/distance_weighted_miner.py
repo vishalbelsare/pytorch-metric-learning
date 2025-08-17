@@ -3,12 +3,12 @@ import torch
 from ..distances import LpDistance
 from ..utils import common_functions as c_f
 from ..utils import loss_and_miner_utils as lmu
-from .base_miner import BaseTupleMiner
+from .base_miner import BaseMiner
 
 
 # adapted from
 # https://github.com/chaoyuaw/incubator-mxnet/blob/master/example/gluon/embedding_learning/model.py
-class DistanceWeightedMiner(BaseTupleMiner):
+class DistanceWeightedMiner(BaseMiner):
     def __init__(self, cutoff=0.5, nonzero_loss_cutoff=1.4, **kwargs):
         super().__init__(**kwargs)
         c_f.assert_distance_type(
@@ -30,7 +30,7 @@ class DistanceWeightedMiner(BaseTupleMiner):
 
         # See the first equation from Section 4 of the paper
         log_weights = (2.0 - d) * torch.log(mat) - ((d - 3) / 2) * torch.log(
-            1.0 - 0.25 * (mat ** 2.0)
+            1.0 - 0.25 * (mat**2.0)
         )
 
         inf_or_nan = torch.isinf(log_weights) | torch.isnan(log_weights)

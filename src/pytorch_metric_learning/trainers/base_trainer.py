@@ -13,8 +13,8 @@ class BaseTrainer:
         optimizers,
         batch_size,
         loss_funcs,
-        mining_funcs,
         dataset,
+        mining_funcs=None,
         iterations_per_epoch=None,
         data_device=None,
         dtype=None,
@@ -26,7 +26,7 @@ class BaseTrainer:
         freeze_these=(),
         freeze_trunk_batchnorm=False,
         label_hierarchy_level=0,
-        dataloader_num_workers=32,
+        dataloader_num_workers=2,
         data_and_label_getter=None,
         dataset_labels=None,
         set_min_label_to_zero=False,
@@ -37,8 +37,8 @@ class BaseTrainer:
         self.optimizers = optimizers
         self.batch_size = batch_size
         self.loss_funcs = loss_funcs
-        self.mining_funcs = mining_funcs
         self.dataset = dataset
+        self.mining_funcs = {} if mining_funcs is None else mining_funcs
         self.iterations_per_epoch = iterations_per_epoch
         self.data_device = data_device
         self.dtype = dtype
@@ -205,9 +205,7 @@ class BaseTrainer:
 
     def initialize_data_device(self):
         if self.data_device is None:
-            self.data_device = torch.device(
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
+            self.data_device = c_f.use_cuda_if_available()
 
     def initialize_label_mapper(self):
         self.label_mapper = c_f.LabelMapper(
@@ -256,7 +254,7 @@ class BaseTrainer:
 
     def initialize_models(self):
         if "embedder" not in self.models:
-            self.models["embedder"] = c_f.Identity()
+            self.models["embedder"] = torch.nn.Identity()
 
     def verify_dict_keys(self):
         self.allowed_lr_scheduler_key_suffixes = {

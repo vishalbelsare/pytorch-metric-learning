@@ -121,10 +121,10 @@ class OriginalImplementationFastAP(torch.autograd.Function):
         dist2 = Variable(ctx.dist2, requires_grad=False)
         I_pos = Variable(ctx.I_pos, requires_grad=False)
         I_neg = Variable(ctx.I_neg, requires_grad=False)
-        h = Variable(ctx.h, requires_grad=False)
+        h = Variable(ctx.h, requires_grad=False)  # noqa: F841
         H = Variable(ctx.H, requires_grad=False)
         h_pos = Variable(ctx.h_pos, requires_grad=False)
-        h_neg = Variable(ctx.h_neg, requires_grad=False)
+        h_neg = Variable(ctx.h_neg, requires_grad=False)  # noqa: F841
         H_pos = Variable(ctx.H_pos, requires_grad=False)
         N_pos = Variable(ctx.N_pos, requires_grad=False)
 
@@ -199,9 +199,9 @@ class OriginalImplementationFastAPLoss(torch.nn.Module):
 import unittest
 
 from pytorch_metric_learning.losses import FastAPLoss
-from pytorch_metric_learning.utils import common_functions as c_f
 
 from .. import TEST_DEVICE, TEST_DTYPES
+from ..zzz_testing_utils.testing_utils import angle_to_coord
 
 
 class TestFastAPLoss(unittest.TestCase):
@@ -209,11 +209,13 @@ class TestFastAPLoss(unittest.TestCase):
         num_bins = 5
         loss_func = FastAPLoss(num_bins)
         original_loss_func = OriginalImplementationFastAPLoss(num_bins)
+        ref_emb = torch.randn(32, 32)
+        ref_labels = torch.randint(0, 10, (32,))
 
         for dtype in TEST_DTYPES:
             embedding_angles = torch.arange(0, 180)
             embeddings = torch.tensor(
-                [c_f.angle_to_coord(a) for a in embedding_angles],
+                [angle_to_coord(a) for a in embedding_angles],
                 requires_grad=True,
                 dtype=dtype,
             ).to(
@@ -223,6 +225,16 @@ class TestFastAPLoss(unittest.TestCase):
 
             loss = loss_func(embeddings, labels)
             loss.backward()
-            original_loss = original_loss_func(embeddings, labels)
+            original_loss = original_loss_func(
+                torch.nn.functional.normalize(embeddings), labels
+            )
             rtol = 1e-2 if dtype == torch.float16 else 1e-5
             self.assertTrue(torch.isclose(loss, original_loss, rtol=rtol))
+
+            # fastap doesn't support ref_emb
+            self.assertRaises(
+                ValueError,
+                lambda: loss_func(
+                    embeddings, labels, ref_emb=ref_emb, ref_labels=ref_labels
+                ),
+            )

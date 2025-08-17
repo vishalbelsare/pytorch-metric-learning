@@ -18,7 +18,9 @@ class FastAPLoss(BaseMetricLossFunction):
     Adapted from https://github.com/kunhe/FastAP-metric-learning
     """
 
-    def compute_loss(self, embeddings, labels, indices_tuple):
+    def compute_loss(self, embeddings, labels, indices_tuple, ref_emb, ref_labels):
+        c_f.labels_required(labels)
+        c_f.ref_not_supported(embeddings, labels, ref_emb, ref_labels)
         dtype, device = embeddings.dtype, embeddings.device
         miner_weights = lmu.convert_to_weights(indices_tuple, labels, dtype=dtype)
         N = labels.size(0)
@@ -33,7 +35,7 @@ class FastAPLoss(BaseMetricLossFunction):
             return self.zero_losses()
         dist_mat = self.distance(embeddings)
 
-        histogram_max = 2 ** self.distance.power
+        histogram_max = 2**self.distance.power
         histogram_delta = histogram_max / self.num_bins
         mid_points = torch.linspace(
             0.0, histogram_max, steps=self.num_edges, device=device, dtype=dtype

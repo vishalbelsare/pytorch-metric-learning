@@ -23,12 +23,12 @@ This class is equivalent to using ```ThresholdReducer(low=0)```. See [ThresholdR
 ## BaseReducer
 All reducers extend this class.
 ```python
-reducers.BaseReducer(collect_stats=True)
+reducers.BaseReducer(collect_stats=False)
 ```
 
 **Parameters**:
 
-* **collect_stats**: If True, will collect various statistics that may be useful to analyze during experiments. If False, these computations will be skipped. Want to make ```False``` the default? Set the global [COLLECT_STATS](common_functions.md#collect_stats) flag.
+* **collect_stats**: If True, will collect various statistics that may be useful to analyze during experiments. If False, these computations will be skipped. Want to make ```True``` the default? Set the global [COLLECT_STATS](common_functions.md#collect_stats) flag.
 
 
 ## ClassWeightedReducer
@@ -120,6 +120,13 @@ reducers.PerAnchorReducer(reducer=None,
 * **aggregation_func**: A function that takes in ```(x, num_per_row)``` and returns a loss per row of ```x```. The default is the ```aggregation_func``` defined in the code snippet above. It returns the mean per row.
    	* ```x``` is an NxN array of pairwise losses, where N is the batch size.
    	* ```num_per_row``` is a size N array which indicates how many non-zero losses there are per-row of ```x```.
+
+
+## SumReducer
+This will return the sum of the losses.
+```python
+reducers.SumReducer(**kwargs)
+```
 
 
 ## ThresholdReducer
